@@ -1,0 +1,644 @@
+using UnityEngine;
+using System.Collections;
+using System.Collections.Generic;
+
+public class GhostDropTrigger : MonoBehaviour
+{
+    [System.Serializable]
+    public class PassengerPrefabEntry
+    {
+        public string passengerName;
+        public GameObject prefab;
+    }
+
+    [Header("Passenger Prefabs")]
+    [SerializeField]
+    private List<PassengerPrefabEntry> passengerPrefabs =
+        new List<PassengerPrefabEntry>();
+
+    [Tooltip("Name used to select the passenger to drop.")]
+    [SerializeField] private string passengerNameToDrop = "witch";
+
+    [SerializeField] private Transform fallbackSpawnPoint;
+
+    [Header("Arrow")]
+    [SerializeField] private GameObject arrow;
+
+    [Header("Player Car Spawn Point Search")]
+    [SerializeField] private string spawnPointName = "PassengerSpawnPoint";
+    [SerializeField] private string spawnPointTag = "";
+
+    [Header("Spawn Rotation")]
+    [SerializeField] private bool useSpawnPointRotation = false;
+    [SerializeField] private Vector3 spawnRotationOffset = Vector3.zero;
+
+    [Header("Passenger Movement")]
+    [SerializeField]
+    private Vector3 movementDirection = new Vector3(0f, 0f, -1f);
+
+    [SerializeField] private float movementDistance = 10f;
+    [SerializeField] private float movementSpeed = 2f;
+
+    [Header("Passenger Rotation")]
+    [SerializeField] private bool rotateToFaceDirection = true;
+    [SerializeField] private bool keepUpright = true;
+    [SerializeField] private Vector3 movementRotationOffset = Vector3.zero;
+    [SerializeField] private float rotationSpeed = 360f;
+
+    [Header("Player Control")]
+    [SerializeField] private bool stopPlayerDuringDrop = true;
+    [SerializeField] private float controlResumeDelay = 0.25f;
+
+    [Header("Smooth Stop")]
+    [SerializeField] private float stopDuration = 0.9f;
+    [SerializeField] private float controlLossDelay = 0.35f;
+
+    [Header("Car Rotation Lock")]
+    [Tooltip("Keeps the car from rotating from the moment it enters the trigger until controls are restored.")]
+    [SerializeField] private bool lockCarRotation = true;
+
+    [Header("Passenger Effects")]
+    [SerializeField] private bool disableAllEffectsOnDrop = true;
+    [SerializeField] private bool stopPassengerEffectAudio = true;
+
+    [Header("Finish")]
+    [SerializeField] private float finishNotificationDelay = 0f;
+
+    private RCC_CarControllerV3 playerCar;
+    private Rigidbody playerRigidbody;
+
+    // Position and rotation captured before the car stops.
+    private Vector3 carLastPosition;
+    private Quaternion carLastRotation;
+
+    private bool dropStarted;
+    private bool originalCanControl;
+
+    private Coroutine dropRoutine;
+    private Coroutine rotationLockRoutine;
+
+    private void OnEnable()
+    {
+        if (!dropStarted && arrow != null)
+            arrow.SetActive(true);
+    }
+
+    private void OnTriggerEnter(Collider other)
+    {
+        if (dropStarted)
+            return;
+
+        RCC_CarControllerV3 car =
+            other.GetComponentInParent<RCC_CarControllerV3>();
+
+        if (car == null)
+            return;
+
+        Pauser.LockPause();
+
+        playerCar = car;
+        playerRigidbody = playerCar.GetComponent<Rigidbody>();
+
+        // Remember the car's exact position and rotation before the smooth stop.
+        carLastPosition = playerCar.transform.position;
+        carLastRotation = playerCar.transform.rotation;
+
+        dropStarted = true;
+        originalCanControl = playerCar.canControl;
+
+        // Kill any spin immediately and lock the rotation.
+        if (lockCarRotation)
+        {
+            if (playerRigidbody != null)
+                playerRigidbody.angularVelocity = Vector3.zero;
+
+            StartRotationLock();
+        }
+
+        HideArrow();
+
+        if (GameManager.Instance != null)
+            GameManager.Instance.ActivateCinematicCamera(playerCar);
+
+        if (disableAllEffectsOnDrop)
+            DisableAllPassengerEffects();
+
+        dropRoutine = StartCoroutine(DropPassenger());
+    }
+
+    private void HideArrow()
+    {
+        if (arrow != null)
+            arrow.SetActive(false);
+    }
+
+    // =========================================================
+    // ROTATION LOCK
+    // =========================================================
+
+    private void StartRotationLock()
+    {
+        StopRotationLock();
+        rotationLockRoutine = StartCoroutine(RotationLockLoop());
+    }
+
+    private void StopRotationLock()
+    {
+        if (rotationLockRoutine != null)
+        {
+            StopCoroutine(rotationLockRoutine);
+            rotationLockRoutine = null;
+        }
+    }
+
+    private IEnumerator RotationLockLoop()
+    {
+        while (playerCar != null)
+        {
+            yield return new WaitForFixedUpdate();
+
+            if (playerCar == null)
+                yield break;
+
+            if (playerRigidbody != null)
+            {
+                playerRigidbody.angularVelocity = Vector3.zero;
+                playerRigidbody.rotation = carLastRotation;
+            }
+            else
+            {
+                playerCar.transform.rotation = carLastRotation;
+            }
+        }
+    }
+
+    // =========================================================
+    // SMOOTH STOP
+    // =========================================================
+
+    private IEnumerator SmoothStopPlayer()
+    {
+        if (playerCar == null)
+            yield break;
+
+        float duration = Mathf.Max(0.01f, stopDuration);
+
+        float controlDelay =
+            Mathf.Clamp(controlLossDelay, 0f, duration);
+
+        bool controlsRemoved = false;
+        float elapsed = 0f;
+        float previousRemaining = 1f;
+
+        if (controlDelay <= 0f)
+        {
+            playerCar.canControl = false;
+            controlsRemoved = true;
+        }
+
+        while (elapsed < duration)
+        {
+            yield return new WaitForFixedUpdate();
+
+            if (playerCar == null)
+                yield break;
+
+            elapsed += Time.fixedDeltaTime;
+
+            if (!controlsRemoved && elapsed >= controlDelay)
+            {
+                playerCar.canControl = false;
+                controlsRemoved = true;
+            }
+
+            float t = Mathf.Clamp01(elapsed / duration);
+
+            float remaining =
+                1f - Mathf.SmoothStep(0f, 1f, t);
+
+            float ratio = previousRemaining > 0.0001f
+                ? remaining / previousRemaining
+                : 0f;
+
+            previousRemaining = remaining;
+
+            if (playerRigidbody != null)
+            {
+                Vector3 velocity = playerRigidbody.velocity;
+
+                playerRigidbody.velocity = new Vector3(
+                    velocity.x * ratio,
+                    velocity.y,
+                    velocity.z * ratio);
+
+                playerRigidbody.angularVelocity =
+                    lockCarRotation
+                        ? Vector3.zero
+                        : playerRigidbody.angularVelocity * ratio;
+            }
+        }
+
+        if (!controlsRemoved)
+            playerCar.canControl = false;
+
+        if (playerRigidbody != null)
+        {
+            Vector3 velocity = playerRigidbody.velocity;
+
+            playerRigidbody.velocity =
+                new Vector3(0f, velocity.y, 0f);
+
+            playerRigidbody.angularVelocity = Vector3.zero;
+        }
+    }
+
+    // =========================================================
+    // DISABLE PASSENGER EFFECTS AND AUDIO
+    // =========================================================
+
+    private void DisableAllPassengerEffects()
+    {
+        GhostCarEffect.DeactivateActiveGhostEffect();
+
+        if (playerCar == null)
+            return;
+
+        GhostCarEffect[] ghostEffects =
+            playerCar.GetComponentsInChildren<GhostCarEffect>(true);
+
+        foreach (GhostCarEffect ghost in ghostEffects)
+        {
+            if (ghost != null)
+                ghost.DeactivateGhostEffect();
+        }
+
+        GhostOrbit[] orbitGhosts =
+            playerCar.GetComponentsInChildren<GhostOrbit>(true);
+
+        foreach (GhostOrbit orbit in orbitGhosts)
+        {
+            if (orbit != null)
+            {
+                orbit.gameObject.SetActive(false);
+                Destroy(orbit.gameObject);
+            }
+        }
+
+        WitchCarEffect witch =
+            playerCar.GetComponentInChildren<WitchCarEffect>(true);
+
+        if (witch != null)
+            witch.DeactivateWitchEffect();
+
+        VampireTeleportEffect vampire =
+            playerCar.GetComponentInChildren<VampireTeleportEffect>(true);
+
+        if (vampire != null)
+            vampire.DeactivateVampireEffect();
+
+        SkeletonCarEffect skeleton =
+            playerCar.GetComponentInChildren<SkeletonCarEffect>(true);
+
+        if (skeleton != null)
+            skeleton.DeactivateSkeletonEffect();
+
+        if (stopPassengerEffectAudio)
+            StopPassengerEffectAudio();
+    }
+
+    private void StopPassengerEffectAudio()
+    {
+        if (playerCar == null)
+            return;
+
+        AudioSource[] audioSources =
+            playerCar.GetComponentsInChildren<AudioSource>(true);
+
+        foreach (AudioSource source in audioSources)
+        {
+            if (source == null)
+                continue;
+
+            string objectName = source.gameObject.name;
+
+            bool isPassengerEffectAudio =
+                objectName == "GhostEffectAudio" ||
+                objectName == "WitchEffectAudio" ||
+                objectName == "VampireEffectAudio" ||
+                objectName == "SkeletonEffectAudio";
+
+            if (!isPassengerEffectAudio)
+                continue;
+
+            source.Stop();
+            Destroy(source.gameObject);
+        }
+    }
+
+    // =========================================================
+    // DROP PASSENGER
+    // =========================================================
+
+    private IEnumerator DropPassenger()
+    {
+        if (stopPlayerDuringDrop)
+            yield return SmoothStopPlayer();
+
+        if (playerCar == null)
+            yield break;
+
+        GameObject prefab =
+            FindPrefabContaining(passengerNameToDrop);
+
+        if (prefab == null)
+            prefab = FindFirstValidPrefab();
+
+        if (prefab == null)
+        {
+            Debug.LogWarning(
+                "GhostDropTrigger: No valid passenger prefab assigned.",
+                this);
+
+            yield return ResumeControls();
+            Pauser.UnlockPause();
+
+            dropRoutine = null;
+            yield break;
+        }
+
+        Transform spawnPoint = FindPlayerCarSpawnPoint();
+
+        // Spawn at the car's saved position, not at the spawn point.
+        Vector3 spawnPosition = carLastPosition;
+
+        // Match the car's orientation by default.
+        Quaternion baseRotation = carLastRotation;
+
+        if (useSpawnPointRotation)
+        {
+            if (spawnPoint != null)
+                baseRotation = spawnPoint.rotation;
+            else if (fallbackSpawnPoint != null)
+                baseRotation = fallbackSpawnPoint.rotation;
+        }
+
+        Quaternion initialRotation =
+            baseRotation * Quaternion.Euler(spawnRotationOffset);
+
+        GameObject spawned = Instantiate(
+            prefab,
+            spawnPosition,
+            initialRotation);
+
+        Vector3 direction =
+            movementDirection.sqrMagnitude > 0.0001f
+                ? movementDirection.normalized
+                : Vector3.back;
+
+        if (keepUpright)
+        {
+            direction.y = 0f;
+
+            if (direction.sqrMagnitude < 0.0001f)
+                direction = Vector3.back;
+
+            direction.Normalize();
+        }
+
+        WitchMovement witchMovement =
+            spawned.GetComponentInChildren<WitchMovement>(true);
+
+        if (witchMovement != null)
+        {
+            witchMovement.StartWalkingAway(
+                direction,
+                movementDistance,
+                movementSpeed);
+
+            while (spawned != null &&
+                   witchMovement != null &&
+                   witchMovement.IsMoving)
+            {
+                yield return null;
+            }
+        }
+        else
+        {
+            yield return MovePassengerNormally(
+                spawned,
+                direction,
+                initialRotation);
+        }
+
+        if (spawned != null)
+            Destroy(spawned);
+
+        if (finishNotificationDelay > 0f)
+            yield return new WaitForSeconds(finishNotificationDelay);
+
+        if (GameManager.Instance != null)
+            GameManager.Instance.PassengerDropped(playerCar);
+        else
+            Debug.LogWarning(
+                "GhostDropTrigger: GameManager instance not found.",
+                this);
+
+        yield return ResumeControls();
+
+        dropRoutine = null;
+    }
+
+    // =========================================================
+    // NORMAL MOVEMENT FOR NON-WITCH PASSENGERS
+    // =========================================================
+
+    private IEnumerator MovePassengerNormally(
+        GameObject spawned,
+        Vector3 direction,
+        Quaternion initialRotation)
+    {
+        if (spawned == null)
+            yield break;
+
+        Vector3 targetPosition =
+            spawned.transform.position +
+            direction * Mathf.Max(0f, movementDistance);
+
+        Quaternion targetRotation = initialRotation;
+        bool hasTargetRotation = false;
+
+        if (rotateToFaceDirection &&
+            direction.sqrMagnitude > 0.0001f)
+        {
+            Vector3 lookDirection = direction;
+
+            if (keepUpright)
+                lookDirection.y = 0f;
+
+            if (lookDirection.sqrMagnitude > 0.0001f)
+            {
+                targetRotation =
+                    Quaternion.LookRotation(
+                        lookDirection.normalized,
+                        Vector3.up) *
+                    Quaternion.Euler(movementRotationOffset);
+
+                hasTargetRotation = true;
+            }
+        }
+
+        float speed = Mathf.Max(0.01f, movementSpeed);
+
+        while (spawned != null &&
+               Vector3.Distance(
+                   spawned.transform.position,
+                   targetPosition) > 0.05f)
+        {
+            spawned.transform.position = Vector3.MoveTowards(
+                spawned.transform.position,
+                targetPosition,
+                speed * Time.deltaTime);
+
+            if (hasTargetRotation)
+            {
+                spawned.transform.rotation =
+                    rotationSpeed <= 0f
+                        ? targetRotation
+                        : Quaternion.RotateTowards(
+                            spawned.transform.rotation,
+                            targetRotation,
+                            rotationSpeed * Time.deltaTime);
+            }
+
+            yield return null;
+        }
+
+        if (spawned != null)
+        {
+            spawned.transform.position = targetPosition;
+
+            if (hasTargetRotation)
+                spawned.transform.rotation = targetRotation;
+        }
+    }
+
+    // =========================================================
+    // FIND PASSENGER PREFAB
+    // =========================================================
+
+    private GameObject FindPrefabContaining(string searchText)
+    {
+        if (string.IsNullOrWhiteSpace(searchText))
+            return null;
+
+        foreach (PassengerPrefabEntry entry in passengerPrefabs)
+        {
+            if (entry == null || entry.prefab == null)
+                continue;
+
+            string entryName =
+                string.IsNullOrWhiteSpace(entry.passengerName)
+                    ? entry.prefab.name
+                    : entry.passengerName;
+
+            if (entryName.IndexOf(
+                    searchText,
+                    System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                entry.prefab.name.IndexOf(
+                    searchText,
+                    System.StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return entry.prefab;
+            }
+        }
+
+        return null;
+    }
+
+    private GameObject FindFirstValidPrefab()
+    {
+        foreach (PassengerPrefabEntry entry in passengerPrefabs)
+        {
+            if (entry != null && entry.prefab != null)
+                return entry.prefab;
+        }
+
+        return null;
+    }
+
+    // =========================================================
+    // FIND SPAWN POINT
+    // =========================================================
+
+    private Transform FindPlayerCarSpawnPoint()
+    {
+        if (playerCar == null)
+            return null;
+
+        Transform[] children =
+            playerCar.GetComponentsInChildren<Transform>(true);
+
+        if (!string.IsNullOrWhiteSpace(spawnPointName))
+        {
+            foreach (Transform child in children)
+            {
+                if (child.name.Equals(
+                    spawnPointName,
+                    System.StringComparison.OrdinalIgnoreCase))
+                {
+                    return child;
+                }
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(spawnPointTag))
+        {
+            foreach (Transform child in children)
+            {
+                if (child.CompareTag(spawnPointTag))
+                    return child;
+            }
+        }
+
+        return null;
+    }
+
+    // =========================================================
+    // RESUME PLAYER CONTROL
+    // =========================================================
+
+    private IEnumerator ResumeControls()
+    {
+        if (controlResumeDelay > 0f)
+            yield return new WaitForSeconds(controlResumeDelay);
+
+        // Release the rotation lock right before giving control back.
+        StopRotationLock();
+
+        if (playerCar != null)
+            playerCar.canControl = originalCanControl;
+    }
+
+    // =========================================================
+    // CLEANUP
+    // =========================================================
+
+    private void OnDisable()
+    {
+        if (dropRoutine != null)
+        {
+            StopCoroutine(dropRoutine);
+            dropRoutine = null;
+        }
+
+        StopRotationLock();
+
+        if (dropStarted && playerCar != null)
+        {
+            if (disableAllEffectsOnDrop)
+                DisableAllPassengerEffects();
+
+            playerCar.canControl = originalCanControl;
+        }
+    }
+}
