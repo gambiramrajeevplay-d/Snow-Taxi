@@ -725,7 +725,7 @@ PlayerSettings:
   webGLPowerPreference: 2
   scriptingDefineSymbols:
     Android: BCG_RCC
-    Standalone: BCG_RCC
+    Standalone: BCG_RCC;SimpleTrafficSystem
     WebGL: BCG_RCC
     iPhone: BCG_RCC
   additionalCompilerArguments: {}
