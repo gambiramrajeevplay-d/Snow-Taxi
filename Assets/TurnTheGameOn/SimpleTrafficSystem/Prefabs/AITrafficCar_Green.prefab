@@ -446,7 +446,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   vehicleType: 0
-  accelerationPower: 1500
+  accelerationPower: 50
   goToStartOnStop: 0
   topSpeed: 18
   minDrag: 0.3

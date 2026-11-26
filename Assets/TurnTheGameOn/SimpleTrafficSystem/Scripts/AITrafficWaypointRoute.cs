@@ -91,14 +91,14 @@
             }
             else
             {
-                for (int i = 0, j = 0; i < spawnTrafficVehicles.Length && j < waypointDataList.Count - 1; i++, j++)
+                int step = spawnTrafficVehicles.Length > 0 ? Mathf.Max(2, (waypointDataList.Count - 1) / spawnTrafficVehicles.Length) : 2;
+                for (int i = 0, j = 0; i < spawnTrafficVehicles.Length && j < waypointDataList.Count - 1; i++, j += step)
                 {
                     Vector3 spawnPosition = waypointDataList[j]._transform.position;
                     spawnPosition.y += 1;
                     GameObject spawnedTrafficVehicle = Instantiate(spawnTrafficVehicles[i], spawnPosition, waypointDataList[j]._transform.rotation);
                     spawnedTrafficVehicle.GetComponent<AITrafficCar>().RegisterCar(this);
                     spawnedTrafficVehicle.transform.LookAt(waypointDataList[j + 1]._transform);
-                    j += 1; // increase j again tospawn vehicles with more space between
                 }
             }
         }

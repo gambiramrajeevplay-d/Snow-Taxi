@@ -144,6 +144,21 @@
                         currentWheelCollider.brakeTorque = brakeTorqueNL[_index];
                     }
                 }
+                else
+                {
+                    isBrakingNL[_index] = false;
+                    isDrivingNL[_index] = true;
+                    moveHandBrakeNL[_index] = 0;
+                    brakeTorqueNL[_index] = 0;
+                    for (int j = 0; j < 4; j++)
+                    {
+                        if (j == 0) currentWheelCollider = frontRightWheelColliderList[_index];
+                        else if (j == 1) currentWheelCollider = frontLefttWheelColliderList[_index];
+                        else if (j == 2) currentWheelCollider = backRighttWheelColliderList[_index];
+                        else if (j == 3) currentWheelCollider = backLeftWheelColliderList[_index];
+                        currentWheelCollider.brakeTorque = 0;
+                    }
+                }
             }
         }
         public void Set_RouteInfo(int _index, AITrafficWaypointRouteInfo routeInfo)
