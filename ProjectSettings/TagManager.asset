@@ -10,11 +10,12 @@ TagManager:
   - CoinText
   - Coin
   - TimerText
+  - RCC
   layers:
   - Default
   - TransparentFX
   - Ignore Raycast
-  - 
+  - RCC
   - Water
   - UI
   - Ground
